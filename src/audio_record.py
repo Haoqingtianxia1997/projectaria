@@ -17,7 +17,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from scipy.io import wavfile
 from scipy.signal import butter, resample_poly, sosfilt
-from std_msgs.msg import Empty, String
+from std_msgs.msg import Bool, Empty, String
 
 from projectaria_tools.core.sensor_data import AudioData, AudioDataRecord
 from src.gaze_rgb_config import TRANSCRIPTION_HOLD_SEC
@@ -33,6 +33,10 @@ AUDIO_GAP_TOLERANCE_SAMPLES = 2
 # pipeline publishes /gaze_label after stitching + peak analysis on B release; this is
 # the longest we hold the transcription waiting for it before giving up.
 GAZE_LABEL_TIMEOUT_SEC = 30.0
+
+# A transcription containing this word is a stop command, not an instruction:
+# it goes out on /reset_switch instead of /transcription.
+STOP_KEYWORD = "stop"
 
 # Local headset capture (via PulseAudio). The raw ALSA device is held exclusively
 # by PulseAudio, so we record through the "default" pulse source: plugging in the
@@ -54,19 +58,9 @@ def beep_n(times: int = 1, freq: float = 880.0, duration: float = 0.2, interval:
             time.sleep(interval)
 
 def play_calib_beep():
-    beep()
-    time.sleep(0.5)
-    beep()
-    time.sleep(0.5)
-    beep()
-    time.sleep(0.5)
-    beep()
-    time.sleep(0.5)
+    beep_n(times=1, duration=0.2)
+    time.sleep(0.1)
 
-    print("Triple beep:")
-    beep_n(times=1)
-    time.sleep(0.5)
-    
 
 class AudioHandler:
     """Receives audio frames from the shared AriaStream, drives the record / transcribe
@@ -134,6 +128,7 @@ class AudioHandler:
             rclpy.init(args=None)
         self._node = Node("audio_transcriber")
         self._pub_text = self._node.create_publisher(String, "/transcription", 10)
+        self._pub_stop = self._node.create_publisher(Bool, "/reset_switch", 10)
         self._pub_start = self._node.create_publisher(Empty, "/recording/start", 10)
         # Published once the calibration beep ends, so gaze_label accumulation begins
         # after the beep rather than at video-recording start.
@@ -293,6 +288,18 @@ class AudioHandler:
             condition_on_previous_text=False
             )
         text = result["text"].strip()
+
+        # A stop command is not an instruction for the other device to act on:
+        # publish /reset_switch instead of /transcription, and skip the /gaze_label
+        # wait entirely (nothing downstream is ordering against a label here).
+        if STOP_KEYWORD in text.lower():
+            stop_msg = Bool()
+            stop_msg.data = True
+            self._pub_stop.publish(stop_msg)
+            print(f"Text: {text}")
+            print("Stop keyword detected; published /reset_switch (no /transcription).")
+            print("Press [B] to record again. Ctrl+C to quit.")
+            return
 
         # Hold /transcription until the gaze pipeline has published /gaze_label
         # (it always publishes after B release, empty data on failure), so the

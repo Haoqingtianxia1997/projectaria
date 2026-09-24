@@ -97,7 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--calib-duration",
         type=float,
-        default=30.0,
+        default=40.0,
         help="Seconds to collect calibration samples after pressing C (default: 30).",
     )
     return parser.parse_args()
